@@ -21,6 +21,7 @@ import java.io.FileFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -32,6 +33,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.TimerTask;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.mail.util.SharedByteArrayInputStream;
@@ -712,18 +714,37 @@ public class FileUploadServlet extends ZimbraServlet {
         List<FileItem> items = new ArrayList<FileItem>(1);
         items.add(fi);
         Upload up = new Upload(acct.getId(), fi, filename);
-
-        if (filename.endsWith(".har")) {
-            File file = ((DiskFileItem) fi).getStoreLocation();
-            try {
-                Tika tika = new Tika();
-                String mimeType = tika.detect(file);
-                if (mimeType != null) {
-                    up.contentType = mimeType;
-                }
-            } catch (IOException e) {
-                mLog.warn("Failed to detect file content type");
-            }
+        File file = ((DiskFileItem) fi).getStoreLocation();
+        Tika tika = new Tika();
+        String mimeType = null;
+        try {
+            mimeType = tika.detect(file);
+        } catch (Exception e) {
+            mLog.warn("Error detecting mime type" + e.getMessage());
+        }
+        if (filename.endsWith(".har") && mimeType != null) {
+            up.contentType = mimeType;
+        }
+        if (mimeType == null) {
+            mimeType = up.contentType;
+        }
+        final String finalMimeType = mimeType;
+        String contentTypeBlacklist = LC.zimbra_file_content_type_blacklist.value();
+        List<String> blacklist = new ArrayList<String>();
+        if (!StringUtil.isNullOrEmpty(contentTypeBlacklist)) {
+            blacklist.addAll(Arrays.asList(contentTypeBlacklist.trim().split(",")));
+        }
+        if (blacklist.stream().anyMatch((blacklistedContentType) -> {
+            Pattern p = Pattern.compile(blacklistedContentType);
+            Matcher m = p.matcher(finalMimeType);
+            return m.find();
+        })) {
+            mLog.debug("handlePlainUpload(): deleting %s", fi);
+            fi.delete();
+            mLog.info("File content type is blacklisted : %s" + mimeType);
+            drainRequestStream(req);
+            sendResponse(resp, HttpServletResponse.SC_FORBIDDEN, fmt, null, null, null);
+            return Collections.emptyList();
         }
 
         mLog.info("Received plain: %s", up);
